@@ -1,0 +1,2 @@
+model_checkpoint_path: "/home/andershuss/Projects/IMDBHierarchicalLSTM/model.ckpt"
+all_model_checkpoint_paths: "/home/andershuss/Projects/IMDBHierarchicalLSTM/model.ckpt"
