@@ -5,12 +5,16 @@ import numpy as np
 
 
 class IMDBDataLoader(object):
-    """
+    """Helper to load batches of imdb reviews and sentiment target.
+
+    See: http://ai.stanford.edu/~amaas/data/sentiment/ for details and download
+    data.
+
     :param dataset_path: path to folder with sub folders 'pos' and 'neg' with
         text files on format <id>_<score>.txt
     :type dataset_path: str
 
-    :param label: binary of score (0-9) labels
+    :param label: 'binary' or 'score' (0-9) labels
     :type label: str
     """
     def __init__(self, dataset_path, label='binary'):
@@ -22,6 +26,7 @@ class IMDBDataLoader(object):
         self.index = self.negatives_index + self.positives_index
 
     def get_epoch_iterator(self, batch_size):
+        """For iteration over one epoch with given batch size"""
         load_idx = np.random.permutation(len(self.index))
         for batch_start in range(0, len(self.index), batch_size):
             batch_idx = load_idx[batch_start:batch_start + batch_size]
