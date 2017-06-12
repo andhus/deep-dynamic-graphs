@@ -1,5 +1,6 @@
 from __future__ import division, print_function
 
+import time
 import random
 
 import numpy as np
@@ -117,7 +118,7 @@ def get_tffold_dynamic():
         sigmoid_cross_entropy_from_logits
     )
 
-    compiler = td.Compiler.create((loss,))
+    compiler = td.Compiler.create(loss)
     [loss_per_sample_tensor] = compiler.output_tensors
     loss_tensor = tf.reduce_mean(loss_per_sample_tensor)
 
@@ -179,31 +180,87 @@ def get_tf_static():
     return inputs, masks, target, loss
 
 
+# DYNAMIC
 dynamic_batch = get_dynamic_batch()
-
-# TODO hacky look into this!
-dynamic_batch_ = [(dynamic_batch_el,) for dynamic_batch_el in dynamic_batch]
-
 compiler, dynamic_loss = get_tffold_dynamic()
-dynamic_feed_dict = compiler.build_feed_dict(dynamic_batch_)
+dynamic_feed_dict = compiler.build_feed_dict(dynamic_batch)
+dynamic_train_op = tf.train.AdamOptimizer().minimize(dynamic_loss)
 
 
-def run_dyn():
-    return sess.run(dynamic_loss, dynamic_feed_dict)
+def run_dynamic_fwd(n_batches=1):
+    return [
+        sess.run(dynamic_loss, dynamic_feed_dict)
+        for _ in range(n_batches)
+    ]
 
 
+def run_dynamic_train(n_batches=1):
+    return [
+        sess.run(dynamic_train_op, dynamic_feed_dict)
+        for _ in range(n_batches)
+    ]
+
+
+# STATIC
 static_batch = get_static_batch(dynamic_batch)
 input_batches, mask_batches, target_batch = static_batch
-
 input_tensors, mask_tensors, target_tensor, static_loss = get_tf_static()
 static_feed_dict = dict(
     zip(input_tensors + mask_tensors, input_batches + mask_batches)
 )
 static_feed_dict[target_tensor] = target_batch
+static_train_op = tf.train.AdamOptimizer().minimize(static_loss)
 
 
-def run_static():
-    return sess.run(static_loss, static_feed_dict)
+def run_static_fwd(n_batches=1):
+    return [
+        sess.run(static_loss, static_feed_dict)
+        for _ in range(n_batches)
+    ]
+
+
+def run_static_train(n_batches=1):
+    return [
+        sess.run(static_train_op, static_feed_dict)
+        for _ in range(n_batches)
+    ]
+
+
+def benchmark(n_batches=10):
+    print('Running benchmark for {} batches'.format(n_batches))
+
+    print('\nfwd pass...')
+
+    start = time.time()
+    run_dynamic_fwd(n_batches)
+    end = time.time()
+    dyn_elapsed = end - start
+    print('dynamic fwd: {}s'.format(round(dyn_elapsed, 3)))
+
+    start = time.time()
+    run_static_fwd(n_batches)
+    end = time.time()
+    stat_elapsed = end - start
+    print('static fwd: {}s'.format(round(stat_elapsed, 3)))
+
+    print('dynamic/static fwd: {}'.format(dyn_elapsed/stat_elapsed))
+
+
+    print('\ntraining...')
+
+    start = time.time()
+    run_dynamic_train(n_batches)
+    end = time.time()
+    dyn_elapsed = end - start
+    print('dynamic train: {}s'.format(round(dyn_elapsed, 3)))
+
+    start = time.time()
+    run_static_train(n_batches)
+    end = time.time()
+    stat_elapsed = end - start
+    print('static train: {}s'.format(round(stat_elapsed, 3)))
+
+    print('dynamic/static train: {}'.format(dyn_elapsed / stat_elapsed))
 
 
 sess.run(tf.global_variables_initializer())
