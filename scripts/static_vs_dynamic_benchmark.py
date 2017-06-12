@@ -2,6 +2,7 @@ from __future__ import division, print_function
 
 import time
 import random
+from collections import OrderedDict
 
 import numpy as np
 import tensorflow as tf
@@ -226,25 +227,30 @@ def run_static_train(n_batches=1):
     ]
 
 
-def benchmark(n_batches=10):
+def benchmark(n_batches=10, include_fwd=False):
     print('Running benchmark for {} batches'.format(n_batches))
 
-    print('\nfwd pass...')
+    results = OrderedDict()
+    results['n_batches'] = n_batches
 
-    start = time.time()
-    run_dynamic_fwd(n_batches)
-    end = time.time()
-    dyn_elapsed = end - start
-    print('dynamic fwd: {}s'.format(round(dyn_elapsed, 3)))
+    if include_fwd:
+        print('\nfwd pass...')
 
-    start = time.time()
-    run_static_fwd(n_batches)
-    end = time.time()
-    stat_elapsed = end - start
-    print('static fwd: {}s'.format(round(stat_elapsed, 3)))
+        start = time.time()
+        run_dynamic_fwd(n_batches)
+        end = time.time()
+        dyn_elapsed = end - start
+        results['dynamic_fwd'] = dyn_elapsed
+        print('dynamic fwd: {}s'.format(round(dyn_elapsed, 3)))
 
-    print('dynamic/static fwd: {}'.format(dyn_elapsed/stat_elapsed))
+        start = time.time()
+        run_static_fwd(n_batches)
+        end = time.time()
+        stat_elapsed = end - start
+        results['static_fwd'] = stat_elapsed
+        print('static fwd: {}s'.format(round(stat_elapsed, 3)))
 
+        print('dynamic/static fwd: {}'.format(dyn_elapsed/stat_elapsed))
 
     print('\ntraining...')
 
@@ -252,15 +258,18 @@ def benchmark(n_batches=10):
     run_dynamic_train(n_batches)
     end = time.time()
     dyn_elapsed = end - start
+    results['dynamic_train'] = dyn_elapsed
     print('dynamic train: {}s'.format(round(dyn_elapsed, 3)))
 
     start = time.time()
     run_static_train(n_batches)
     end = time.time()
     stat_elapsed = end - start
+    results['static_train'] = stat_elapsed
     print('static train: {}s'.format(round(stat_elapsed, 3)))
 
     print('dynamic/static train: {}'.format(dyn_elapsed / stat_elapsed))
 
+    return results
 
 sess.run(tf.global_variables_initializer())
