@@ -12,8 +12,8 @@ import tensorflow_fold as td
 sess = tf.InteractiveSession()
 
 
+# PARAMETERS
 input_types = ['A', 'B', 'C']
-# input_sizes = [256, 256, 256]
 input_sizes = [128, 128, 128]
 input_type_to_size = dict(zip(input_types, input_sizes))
 mlp_h_size = 512
@@ -24,6 +24,15 @@ batch_size = 16
 
 
 def get_input_sequence():
+    """Generates gaussian sampled input sequence.
+
+    :rtype: [
+        {
+            'type': str \in input_types,
+            'data': ndarray(shape=(input_size,))
+        }
+    ]
+    """
     input_sequence = []
     for _ in range(sequence_length):
         type_ = random.sample(input_types, 1)[0]
@@ -34,12 +43,33 @@ def get_input_sequence():
 
 
 def get_target_sequence():
+    """Generates target sequence with random labels \in [0, 1]
+
+    :rtype: [ndarray(shape=(1,)]
+    """
     return list(
         (np.random.randn(sequence_length).reshape(-1, 1) > 0).astype(float)
     )
 
 
 def get_dynamic_batch():
+    """Generates a batch for dynamic (TF Fold) computational graph.
+
+    NOTE in the TF Fold batch input and target are paired within each sample.
+
+    :return: [
+        (
+            <input_sequence>,
+            <target sequence>
+        )
+    ]
+    :rtype: [
+        (
+            [{'type': str, 'data': ndarray}],
+            [ndarray]
+        )
+    ]
+    """
     input_sequences = [get_input_sequence() for _ in range(batch_size)]
     target_sequences = [get_target_sequence() for _ in range(batch_size)]
     dynamic_batch = zip(input_sequences, target_sequences)
@@ -48,6 +78,16 @@ def get_dynamic_batch():
 
 
 def get_static_batch(dynamic_batch=None):
+    """Generates batch on the format required by the static (Pure Tensorflow)
+    computational graph - using masks.
+
+    :return:
+        input_batches: [ndarray(shape=(batch_size, sequence_length, input_size))]
+        mask_batches: [ndarray(shape=(batch_size, sequence_length, 1))]
+        target_batch: ndarray(shape=(batch_size, sequence_length, 1))
+
+    :rtype: ([ndarray], [ndarray], ndarray)
+    """
     dynamic_batch = dynamic_batch or get_dynamic_batch()
     # unpack input, target pairs:
     [input_sequences, target_sequences] = map(list, zip(*dynamic_batch))
@@ -75,6 +115,8 @@ def get_static_batch(dynamic_batch=None):
 
 
 def get_tffold_dynamic():
+    """Constructs the dynamic graph using TF Fold.
+    """
     features = [
         (
             td.Vector(input_type_to_size[type_]) >>
@@ -127,6 +169,8 @@ def get_tffold_dynamic():
 
 
 def get_tf_static():
+    """Constructs the static graph using TF and masks.
+    """
     inputs = [
         tf.placeholder(
             'float32',
@@ -171,14 +215,14 @@ def get_tf_static():
     lstm_state_sequence = tf.stack(lstm_state_sequence_list, axis=1)
     output_sequence = tf.layers.dense(lstm_state_sequence, 1, activation=None)
 
-    loss = tf.reduce_mean(
+    loss_tensor = tf.reduce_mean(
         tf.nn.sigmoid_cross_entropy_with_logits(
             labels=target,
             logits=output_sequence
         )
     )
 
-    return inputs, masks, target, loss
+    return inputs, masks, target, loss_tensor
 
 
 # DYNAMIC
@@ -273,3 +317,23 @@ def benchmark(n_batches=10, include_fwd=False):
     return results
 
 sess.run(tf.global_variables_initializer())
+
+
+# EXAMPLE (RUN ON CPU)
+# results = benchmark(2, include_fwd=True)
+#
+# OUTPUT
+# Running benchmark for 2 batches
+#
+# fwd pass...
+# dynamic fwd: 8.765s
+# static fwd: 2.684s
+# dynamic/static fwd: 3.26547539573
+#
+# training...
+# dynamic train: 12.4s
+# static train: 7.233s
+# dynamic/static train: 1.71436011859
+#
+# NOTE: You should use "many more" batches to get a meaningful comparison
+# as optimisation is done on the the fly...
