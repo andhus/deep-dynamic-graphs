@@ -5,27 +5,28 @@ import random
 import numpy as np
 import tensorflow as tf
 
-sess = tf.InteractiveSession()
 import tensorflow_fold as td
 
+sess = tf.InteractiveSession()
 
-input_types = ['A', 'B']
-input_size = 256
-feature_size = 256
+
+input_types = ['A', 'B', 'C']
+# input_sizes = [256, 256, 256]
+input_sizes = [128, 128, 128]
+input_type_to_size = dict(zip(input_types, input_sizes))
+mlp_h_size = 512
+lstm_feature_size = 256
 lstm_state_size = 128
-sequence_length = 1000
+sequence_length = 500
 batch_size = 16
 
 
 def get_input_sequence():
     input_sequence = []
     for _ in range(sequence_length):
-        input_sequence.append(
-            {
-                'type': random.sample(input_types, 1)[0],
-                'data': np.random.randn(input_size)
-            }
-        )
+        type_ = random.sample(input_types, 1)[0]
+        data = np.random.randn(input_type_to_size[type_])
+        input_sequence.append({'type': type_, 'data': data})
 
     return input_sequence
 
@@ -37,58 +38,60 @@ def get_target_sequence():
 
 
 def get_dynamic_batch():
-    input_sequence = [get_input_sequence() for _ in range(batch_size)]
-    target_sequence = [get_target_sequence() for _ in range(batch_size)]
-    return input_sequence, target_sequence
+    input_sequences = [get_input_sequence() for _ in range(batch_size)]
+    target_sequences = [get_target_sequence() for _ in range(batch_size)]
+    dynamic_batch = zip(input_sequences, target_sequences)
+
+    return dynamic_batch
 
 
 def get_static_batch(dynamic_batch=None):
     dynamic_batch = dynamic_batch or get_dynamic_batch()
-    inputs = {
-        'A': np.zeros((batch_size, sequence_length, input_size)),
-        'B': np.zeros((batch_size, sequence_length, input_size))
+    # unpack input, target pairs:
+    [input_sequences, target_sequences] = map(list, zip(*dynamic_batch))
+    type_to_input = {
+        type_: np.zeros(
+            (batch_size, sequence_length, input_type_to_size[type_])
+        ) for type_ in input_types
     }
-    masks = {
-        'A': np.zeros((batch_size, sequence_length, 1)),
-        'B': np.zeros((batch_size, sequence_length, 1))
+    type_to_mask = {
+        type_: np.zeros(
+            (batch_size, sequence_length, 1)
+        ) for type_ in input_types
     }
 
-    for n, in_seq in enumerate(dynamic_batch):
-        for t, input_ in enumerate(in_seq):
-            inputs[input_['type']][n, t, :] = np.array(input_['data'])
-            masks[input_['type']][n, t, 0] = 1
+    for n, input_sequence in enumerate(input_sequences):
+        for t, input_ in enumerate(input_sequence):
+            type_to_input[input_['type']][n, t, :] = input_['data']
+            type_to_mask[input_['type']][n, t, 0] = 1
 
-    return inputs, masks
+    input_batches = [type_to_input[type_] for type_ in input_types]
+    mask_batches = [type_to_mask[type_] for type_ in input_types]
+    target_batch = np.array(target_sequences)
 
-    # feed_dict = {
-    #     inputs_A: inputs['A'],
-    #     mask_A: masks['A'],
-    #     inputs_B: inputs['B'],
-    #     mask_B: masks['B']
-    # }
+    return input_batches, mask_batches, target_batch
 
 
 def get_tffold_dynamic():
-    feature_from_A = td.Vector(input_size) >> td.FC(feature_size)
-    feature_from_B = td.Vector(input_size) >> td.FC(feature_size)
-    feature = td.OneOf(
+    features = [
+        (
+            td.Vector(input_type_to_size[type_]) >>
+            td.FC(mlp_h_size) >>
+            td.FC(lstm_feature_size)
+        ) for type_ in input_types
+    ]
+    lstm_feature = td.OneOf(
         key_fn=lambda x: x['type'],
         case_blocks={
-            'A': td.GetItem('data') >> feature_from_A,
-            'B': td.GetItem('data') >> feature_from_B
+            type_: td.GetItem('data') >> feature
+            for type_, feature in zip(input_types, features)
         }
     )
-
-    def GetLastState():
-        """Composition of blocks that gets last state vector from LSTM output"""
-        return td.GetItem(1) >> td.GetItem(1)
-
 
     def SequenceLoss(loss_f):
         """ Expects (seq, seq)
         """
-        return td.Zip() >> td.Map(td.Function(loss_f)) >> td.Reduce(td.Sum())
-
+        return td.Zip() >> td.Map(td.Function(loss_f)) >> td.Mean()
 
     def sigmoid_cross_entropy_from_logits(y_pred, y_true):
         return tf.nn.sigmoid_cross_entropy_with_logits(
@@ -96,14 +99,16 @@ def get_tffold_dynamic():
             logits=y_pred
         )
 
-    feature_sequence = td.Map(feature)
+    lstm_feature_sequence = td.Map(lstm_feature)
 
     lstm_cell = td.ScopedLayer(
         tf.contrib.rnn.BasicLSTMCell(num_units=lstm_state_size),
         'lstm_cell'
     )
     lstm_state_sequence = (
-        feature_sequence >> td.RNN(lstm_cell, name='lstm') >> td.GetItem(0)
+        lstm_feature_sequence >>
+        td.RNN(lstm_cell, name='lstm') >>
+        td.GetItem(0)
     )
     output_sequence = lstm_state_sequence >> td.Map(td.FC(1, activation=None))
     target_sequence = td.Map(td.Vector(1))
@@ -113,38 +118,56 @@ def get_tffold_dynamic():
     )
 
     compiler = td.Compiler.create((loss,))
-    [loss_tensor] = compiler.output_tensors
+    [loss_per_sample_tensor] = compiler.output_tensors
+    loss_tensor = tf.reduce_mean(loss_per_sample_tensor)
 
     return compiler, loss_tensor
 
 
 def get_tf_static():
-    inputs_A = tf.placeholder('float32', shape=(None, None, input_size), name='inputs_A')
-    inputs_B = tf.placeholder('float32', shape=(None, None, input_size), name='inputs_B')
-    mask_A = tf.placeholder('float32', shape=(None, None, 1), name='mask_A')
-    mask_B = tf.placeholder('float32', shape=(None, None, 1), name='mask_B')
-
-    inputs = [inputs_A, inputs_B]
-    masks = [mask_A, mask_B]
+    inputs = [
+        tf.placeholder(
+            'float32',
+            shape=(None, None, input_type_to_size[type_]),
+            name='input_{}'.format(type_)
+        ) for type_ in input_types
+    ]
+    masks = [
+        tf.placeholder(
+            'float32',
+            shape=(None, None, 1),
+            name='mask_{}'.format(type_)
+        ) for type_ in input_types
+    ]
 
     target = tf.placeholder('float32', shape=(None, None, 1), name='target')
 
-    feature_from_A = tf.layers.dense(inputs_A, feature_size, activation=tf.nn.relu)
-    feature_from_B = tf.layers.dense(inputs_B, feature_size, activation=tf.nn.relu)
-    feature_from_A_masked = feature_from_A * mask_A
-    feature_from_B_masked = feature_from_B * mask_B
+    features = [
+        tf.layers.dense(
+            tf.layers.dense(input_, mlp_h_size, activation=tf.nn.relu),
+            lstm_feature_size,
+            activation=tf.nn.relu
+        ) for input_ in inputs
+    ]
+    masked_features = [
+        feature * mask for feature, mask in zip(features, masks)
+    ]
 
-    feature_sequences = feature_from_A_masked + feature_from_B_masked
+    lstm_feature_sequence = sum(masked_features)
 
     lstm_cell = tf.contrib.rnn.BasicLSTMCell(num_units=lstm_state_size)
-    feature_sequences_ = tf.unstack(feature_sequences, sequence_length, axis=1)
-    lstm_state_sequence, _last_states = tf.contrib.rnn.static_rnn(
+    feature_sequences_ = tf.unstack(
+        lstm_feature_sequence,
+        sequence_length,
+        axis=1
+    )
+    lstm_state_sequence_list, _last_states = tf.contrib.rnn.static_rnn(
         lstm_cell,
         feature_sequences_,
         dtype=tf.float32
     )
-    lstm_state_sequence_tensor = tf.stack(lstm_state_sequence, axis=1)
-    output_sequence = tf.layers.dense(lstm_state_sequence_tensor, 1, activation=None)
+    lstm_state_sequence = tf.stack(lstm_state_sequence_list, axis=1)
+    output_sequence = tf.layers.dense(lstm_state_sequence, 1, activation=None)
 
     loss = tf.reduce_mean(
         tf.nn.sigmoid_cross_entropy_with_logits(
@@ -156,25 +179,27 @@ def get_tf_static():
     return inputs, masks, target, loss
 
 
-dyn_in_seq, dyn_target_seq = get_dynamic_batch()
+dynamic_batch = get_dynamic_batch()
+
+# TODO hacky look into this!
+dynamic_batch_ = [(dynamic_batch_el,) for dynamic_batch_el in dynamic_batch]
+
 compiler, dynamic_loss = get_tffold_dynamic()
-dynamic_feed_dict = compiler.build_feed_dict(
-    (zip(dyn_in_seq, dyn_target_seq),)
-)
+dynamic_feed_dict = compiler.build_feed_dict(dynamic_batch_)
 
 
 def run_dyn():
     return sess.run(dynamic_loss, dynamic_feed_dict)
 
 
-static_batch = get_static_batch(dyn_in_seq)
-inputs, masks = static_batch
+static_batch = get_static_batch(dynamic_batch)
+input_batches, mask_batches, target_batch = static_batch
 
 input_tensors, mask_tensors, target_tensor, static_loss = get_tf_static()
 static_feed_dict = dict(
-    zip(input_tensors + mask_tensors, inputs.values() + masks.values())
+    zip(input_tensors + mask_tensors, input_batches + mask_batches)
 )
-static_feed_dict[target_tensor] = np.array(dyn_target_seq)
+static_feed_dict[target_tensor] = target_batch
 
 
 def run_static():
